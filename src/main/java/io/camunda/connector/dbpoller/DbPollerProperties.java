@@ -21,6 +21,24 @@ public class DbPollerProperties {
 
     public enum WatermarkType { TIMESTAMP, BIGINT, STRING, UUID }
 
+    /** How a successfully-correlated row is tracked so it isn't redelivered. */
+    public enum ConsumptionStrategy {
+        /** Track a high-water column value; default, backward-compatible behavior. */
+        WATERMARK,
+        /** Flip a boolean column on the row immediately after correlation. */
+        UPDATE_FLAG,
+        /** Delete the row immediately after correlation. */
+        DELETE_AFTER_READ
+    }
+
+    /** Where the {@link ConsumptionStrategy#WATERMARK} value is persisted between polls. */
+    public enum WatermarkStorage {
+        /** Lost on connector restart/redeploy; default, backward-compatible behavior. */
+        IN_MEMORY,
+        /** Persisted to an operator-created JDBC table so it survives restarts. */
+        JDBC_TABLE
+    }
+
     // -------------------------------------------------------------------------
     // Connection
     // -------------------------------------------------------------------------
@@ -45,9 +63,21 @@ public class DbPollerProperties {
     // Watermark
     // -------------------------------------------------------------------------
 
+    private ConsumptionStrategy consumptionStrategy = ConsumptionStrategy.WATERMARK;
     private String watermarkColumn;
     private WatermarkType watermarkType = WatermarkType.TIMESTAMP;
     private String initialWatermark;
+    private WatermarkStorage watermarkStorage = WatermarkStorage.IN_MEMORY;
+    private String watermarkTableName = "camunda_db_poller_watermark";
+
+    // -------------------------------------------------------------------------
+    // Consumption (UPDATE_FLAG / DELETE_AFTER_READ)
+    // -------------------------------------------------------------------------
+
+    /** Table the UPDATE/DELETE is issued against; the polling query itself may join/filter freely. */
+    private String targetTable;
+    private String keyColumn;
+    private String flagColumn;
 
     // -------------------------------------------------------------------------
     // Correlation
@@ -77,12 +107,28 @@ public class DbPollerProperties {
         requireNonBlank(username, "username");
         requireNonBlank(password, "password");
         requireNonBlank(pollingQuery, "pollingQuery");
-        requireNonBlank(watermarkColumn, "watermarkColumn");
 
-        if (!pollingQuery.contains(":lastWatermark")) {
-            throw new DbPollerException(
-                    "pollingQuery must contain the placeholder ':lastWatermark'");
+        ConsumptionStrategy strategy = consumptionStrategy == null ? ConsumptionStrategy.WATERMARK : consumptionStrategy;
+
+        if (strategy == ConsumptionStrategy.WATERMARK) {
+            requireNonBlank(watermarkColumn, "watermarkColumn");
+            if (!pollingQuery.contains(":lastWatermark")) {
+                throw new DbPollerException(
+                        "pollingQuery must contain the placeholder ':lastWatermark'");
+            }
+            parsedInitialWatermark();
+
+            if (watermarkStorage == WatermarkStorage.JDBC_TABLE) {
+                requireNonBlank(watermarkTableName, "watermarkTableName");
+            }
+        } else {
+            requireNonBlank(targetTable, "targetTable");
+            requireNonBlank(keyColumn, "keyColumn");
+            if (strategy == ConsumptionStrategy.UPDATE_FLAG) {
+                requireNonBlank(flagColumn, "flagColumn");
+            }
         }
+
         if (pollingIntervalSeconds == null || pollingIntervalSeconds < 1) {
             throw new DbPollerException("pollingIntervalSeconds must be >= 1");
         }
@@ -90,11 +136,22 @@ public class DbPollerProperties {
             throw new DbPollerException("batchSize must be between 1 and 10,000 inclusive");
         }
 
-        parsedInitialWatermark();
-
         if (dialect == null) {
             dialect = DatabaseDialect.fromUrl(jdbcUrl);
         }
+    }
+
+    /**
+     * Returns {@code true} if the configured strategy/storage combination requires
+     * a writable database connection (UPDATE/DELETE/INSERT), as opposed to the
+     * default read-only watermark-column polling.
+     */
+    public boolean requiresWriteAccess() {
+        ConsumptionStrategy strategy = consumptionStrategy == null ? ConsumptionStrategy.WATERMARK : consumptionStrategy;
+        if (strategy == ConsumptionStrategy.UPDATE_FLAG || strategy == ConsumptionStrategy.DELETE_AFTER_READ) {
+            return true;
+        }
+        return strategy == ConsumptionStrategy.WATERMARK && watermarkStorage == WatermarkStorage.JDBC_TABLE;
     }
 
     private static void requireNonBlank(String value, String fieldName) {
@@ -206,6 +263,9 @@ public class DbPollerProperties {
     public Integer getQueryTimeoutSeconds() { return queryTimeoutSeconds; }
     public void setQueryTimeoutSeconds(Integer queryTimeoutSeconds) { this.queryTimeoutSeconds = queryTimeoutSeconds; }
 
+    public ConsumptionStrategy getConsumptionStrategy() { return consumptionStrategy == null ? ConsumptionStrategy.WATERMARK : consumptionStrategy; }
+    public void setConsumptionStrategy(ConsumptionStrategy consumptionStrategy) { this.consumptionStrategy = consumptionStrategy; }
+
     public String getWatermarkColumn() { return watermarkColumn; }
     public void setWatermarkColumn(String watermarkColumn) { this.watermarkColumn = watermarkColumn; }
 
@@ -214,6 +274,21 @@ public class DbPollerProperties {
 
     public String getInitialWatermark() { return initialWatermark; }
     public void setInitialWatermark(String initialWatermark) { this.initialWatermark = initialWatermark; }
+
+    public WatermarkStorage getWatermarkStorage() { return watermarkStorage == null ? WatermarkStorage.IN_MEMORY : watermarkStorage; }
+    public void setWatermarkStorage(WatermarkStorage watermarkStorage) { this.watermarkStorage = watermarkStorage; }
+
+    public String getWatermarkTableName() { return watermarkTableName; }
+    public void setWatermarkTableName(String watermarkTableName) { this.watermarkTableName = watermarkTableName; }
+
+    public String getTargetTable() { return targetTable; }
+    public void setTargetTable(String targetTable) { this.targetTable = targetTable; }
+
+    public String getKeyColumn() { return keyColumn; }
+    public void setKeyColumn(String keyColumn) { this.keyColumn = keyColumn; }
+
+    public String getFlagColumn() { return flagColumn; }
+    public void setFlagColumn(String flagColumn) { this.flagColumn = flagColumn; }
 
     public String getInstanceId() { return instanceId; }
     public void setInstanceId(String instanceId) { this.instanceId = instanceId; }

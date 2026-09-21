@@ -1,6 +1,6 @@
 # camunda-db-poller
 
-> **Community MVP** — production-usable for PostgreSQL, MySQL, and H2; additional dialects and watermark strategies are on the roadmap.
+> **Community MVP** — production-usable for PostgreSQL, MySQL, and H2. Oracle, SQL Server, and SQLite are supported (unit-tested dialect logic; not yet integration-tested against real instances) — see [Supported Dialects](#supported-dialects).
 
 > For a full walkthrough — build, deploy to Camunda 8 SaaS, model a process, and watch a row flow end-to-end — see [DEPLOYMENT.md](DEPLOYMENT.md).
 
@@ -144,7 +144,113 @@ A healthy connection reports `"zeebeClient":{"status":"UP", ...}`.
 | Correlation Key       | `= row.orderId`                                                              |
 | Result Variable       | `orderRow`                                                                   |
 
+## Supported Dialects
+
+| Dialect | JDBC URL prefix | Notes |
+|---|---|---|
+| PostgreSQL | `jdbc:postgresql:` | |
+| MySQL | `jdbc:mysql:` | |
+| H2 | `jdbc:h2:` | |
+| Oracle | `jdbc:oracle:` | Uses `FETCH FIRST n ROWS ONLY` for auto-pagination. |
+| SQL Server | `jdbc:sqlserver:` | Uses `OFFSET ... FETCH NEXT n ROWS ONLY`, which **requires an `ORDER BY`** in the Polling Query — SQL Server rejects `OFFSET`/`FETCH` without one. |
+| SQLite | `jdbc:sqlite:` | |
+
+Dialect is auto-detected from the JDBC URL prefix; override it via the **Dialect** dropdown if needed.
+
+## Consumption Strategies
+
+How a correlated row is marked so it isn't redelivered on the next poll:
+
+| Strategy | Mechanism | Requires write access? |
+|---|---|---|
+| `WATERMARK` (default) | Tracks a high-water column value; the row itself is never modified. | No |
+| `UPDATE_FLAG` | Flips a boolean column to `TRUE` immediately after each row is correlated. | Yes |
+| `DELETE_AFTER_READ` | Deletes the row immediately after it's correlated. | Yes |
+
+`UPDATE_FLAG` and `DELETE_AFTER_READ` mutate the row **immediately after that row's
+correlation succeeds** — inside the same poll, before the next row is processed —
+rather than at the end of the batch. This means a later row in the batch failing
+to correlate does not cause an already-correlated earlier row to be redelivered.
+
+### UPDATE_FLAG / DELETE_AFTER_READ configuration
+
+These strategies replace the Watermark group entirely — no watermark column,
+type, or placeholder is needed, and `:lastWatermark` does not have to appear in
+the Polling Query. Instead, configure:
+
+| Property | Purpose |
+|---|---|
+| Consumption Strategy | `UPDATE_FLAG` or `DELETE_AFTER_READ` |
+| Target Table | Table the UPDATE/DELETE is issued against (the Polling Query itself may still join/filter freely) |
+| Key Column | Single column that uniquely identifies a row, used to target the UPDATE/DELETE |
+| Flag Column | *(`UPDATE_FLAG` only)* boolean-ish column flipped to "true" after correlation |
+
+> The literal used for "true" is dialect-specific: `TRUE` on PostgreSQL/MySQL/H2/SQLite,
+> `1` on SQL Server and Oracle. Neither T-SQL nor (pre-23c) Oracle SQL has a bare
+> `TRUE` keyword, so on those two, **Flag Column should be a numeric/BIT column**
+> (`BIT` on SQL Server, `NUMBER(1)` on Oracle), not a true boolean type.
+
+Example — `UPDATE_FLAG`:
+
+| Property | Example value |
+|---|---|
+| Polling Query | `SELECT * FROM orders WHERE processed = FALSE` |
+| Target Table | `orders` |
+| Key Column | `id` |
+| Flag Column | `processed` |
+
+Example — `DELETE_AFTER_READ`:
+
+| Property | Example value |
+|---|---|
+| Polling Query | `SELECT * FROM orders` |
+| Target Table | `orders` |
+| Key Column | `id` |
+
+Because these strategies issue `UPDATE`/`DELETE` statements, the connector's
+database user needs the matching grant (see [Database Operator
+Setup](#database-operator-setup)) — the connection pool is automatically
+switched from read-only to writable when a strategy other than `WATERMARK` is
+configured (or when **Watermark Storage** below is set to durable). With the
+default `WATERMARK` strategy and in-memory storage, nothing changes: the pool
+stays read-only exactly as before.
+
+### Durable Watermark Storage
+
+By default the watermark lives in memory and is **lost on connector
+restart/redeployment**. Set **Watermark Storage** to `Durable (JDBC table)` to
+persist it instead. The table is **not** auto-created — run this DDL once per
+database before activating the connector (adjust types per dialect as needed;
+this is ANSI-portable SQL that works across all six supported dialects
+unmodified):
+
+```sql
+CREATE TABLE camunda_db_poller_watermark (
+    poller_key       VARCHAR(255) PRIMARY KEY,
+    watermark_value  VARCHAR(255) NOT NULL,
+    updated_at       TIMESTAMP NOT NULL
+);
+```
+
+> Identifiers are matched **case-sensitively, quoted** by the connector
+> (`"camunda_db_poller_watermark"`, `"poller_key"`, etc.). Most dialects
+> preserve the case you use in an unquoted `CREATE TABLE` as-is, but Oracle
+> folds unquoted identifiers to UPPERCASE — on Oracle, quote the DDL above
+> exactly as shown (`CREATE TABLE "camunda_db_poller_watermark" (...)`) so it
+> matches what the connector queries.
+
+The row key (`poller_key`) is the element's **Instance ID** if set, otherwise
+a stable hash of the JDBC URL + Polling Query — so multiple connector
+elements sharing one table don't collide. **Watermark Table Name** (default
+`camunda_db_poller_watermark`) lets you point at a different table name if
+needed.
+
 ## Database Operator Setup
+
+Grants below cover the default read-only `WATERMARK` setup. If you're using
+`UPDATE_FLAG`, `DELETE_AFTER_READ`, or durable (JDBC table) watermark storage,
+add the corresponding `UPDATE` / `DELETE` / `INSERT`+`DELETE` grants noted
+under each snippet.
 
 ### PostgreSQL
 
@@ -155,6 +261,13 @@ GRANT USAGE  ON SCHEMA  public TO camunda_poller;
 GRANT SELECT ON TABLE   orders TO camunda_poller;
 -- If you add more tables later:
 -- ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO camunda_poller;
+
+-- UPDATE_FLAG:
+-- GRANT UPDATE ON TABLE orders TO camunda_poller;
+-- DELETE_AFTER_READ:
+-- GRANT DELETE ON TABLE orders TO camunda_poller;
+-- Durable (JDBC table) watermark storage:
+-- GRANT SELECT, INSERT, DELETE ON TABLE camunda_db_poller_watermark TO camunda_poller;
 ```
 
 ### MySQL
@@ -164,7 +277,41 @@ CREATE USER 'camunda_poller'@'%' IDENTIFIED BY 'change_me'
     WITH MAX_USER_CONNECTIONS 5;
 GRANT SELECT ON orders.* TO 'camunda_poller'@'%';
 FLUSH PRIVILEGES;
+
+-- UPDATE_FLAG:               GRANT UPDATE ON orders.* TO 'camunda_poller'@'%';
+-- DELETE_AFTER_READ:         GRANT DELETE ON orders.* TO 'camunda_poller'@'%';
+-- Durable watermark storage: GRANT SELECT, INSERT, DELETE ON camunda_db_poller_watermark.* TO 'camunda_poller'@'%';
 ```
+
+### Oracle
+
+```sql
+CREATE USER camunda_poller IDENTIFIED BY change_me;
+GRANT CREATE SESSION TO camunda_poller;
+GRANT SELECT ON orders TO camunda_poller;
+
+-- UPDATE_FLAG:               GRANT UPDATE ON orders TO camunda_poller;
+-- DELETE_AFTER_READ:         GRANT DELETE ON orders TO camunda_poller;
+-- Durable watermark storage: GRANT SELECT, INSERT, DELETE ON camunda_db_poller_watermark TO camunda_poller;
+```
+
+### SQL Server
+
+```sql
+CREATE LOGIN camunda_poller WITH PASSWORD = 'change_me';
+CREATE USER camunda_poller FOR LOGIN camunda_poller;
+GRANT SELECT ON dbo.orders TO camunda_poller;
+
+-- UPDATE_FLAG:               GRANT UPDATE ON dbo.orders TO camunda_poller;
+-- DELETE_AFTER_READ:         GRANT DELETE ON dbo.orders TO camunda_poller;
+-- Durable watermark storage: GRANT SELECT, INSERT, DELETE ON dbo.camunda_db_poller_watermark TO camunda_poller;
+```
+
+### SQLite
+
+SQLite has no user/grant model — file-level OS permissions control access.
+Mount the database file read-only (e.g. a read-only volume/bind mount) unless
+`UPDATE_FLAG`, `DELETE_AFTER_READ`, or durable watermark storage is in use.
 
 ## Operational Notes
 
@@ -180,9 +327,10 @@ Each activated connector element gets exactly **one daemon thread** named `db-po
 
 ### Security
 
-- The watermark is always bound via `PreparedStatement` — no string concatenation of user data occurs.
+- The watermark is always bound via `PreparedStatement` — no string concatenation of user data occurs. The `UPDATE`/`DELETE` statements issued by `UPDATE_FLAG`/`DELETE_AFTER_READ` bind the key value the same way; only the (operator-configured, not runtime-user-supplied) table/column *names* are interpolated, and those are always quoted via `DatabaseDialect#quoteIdentifier`.
 - The polling query is a configured template (not user input at runtime), and the only dynamic value it receives is the watermark, which is bound as a typed JDBC parameter.
-- Use a dedicated read-only database user with `CONNECTION LIMIT` (Postgres) or `MAX_USER_CONNECTIONS` (MySQL).
+- The connection pool is **read-only by default** and only becomes writable when the configuration actually needs it — `UPDATE_FLAG`, `DELETE_AFTER_READ`, or durable (JDBC table) watermark storage (see [`DbPollerProperties#requiresWriteAccess`](src/main/java/io/camunda/connector/dbpoller/DbPollerProperties.java)). The default `WATERMARK` + in-memory setup is unaffected and stays read-only.
+- Use a dedicated database user scoped to exactly the grants your configuration needs (see [Database Operator Setup](#database-operator-setup)), with `CONNECTION LIMIT` (Postgres) or `MAX_USER_CONNECTIONS` (MySQL).
 
 ### Clock Skew Warning
 
@@ -190,12 +338,10 @@ When using `TIMESTAMP` watermarks, ensure the clocks of the connector host and t
 
 ## Roadmap
 
-### v1.0
-
-- Additional JDBC dialects: Oracle, SQL Server, SQLite.
-- Durable watermark storage backed by a JDBC table.
-- `UPDATE_FLAG` watermark strategy (flip a boolean column after read).
-- `DELETE_AFTER_READ` watermark strategy (delete row after successful correlation).
+v1.0 is complete: Oracle/SQL Server/SQLite dialects, durable (JDBC table)
+watermark storage, and the `UPDATE_FLAG`/`DELETE_AFTER_READ` consumption
+strategies are all implemented — see [Supported Dialects](#supported-dialects)
+and [Consumption Strategies](#consumption-strategies).
 
 ### v1.1
 

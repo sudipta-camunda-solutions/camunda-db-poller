@@ -18,11 +18,12 @@
     "eventDefinition": "bpmn:MessageEventDefinition"
   },
   "groups": [
-    { "id": "connection",  "label": "Connection"  },
-    { "id": "polling",     "label": "Polling"     },
-    { "id": "watermark",   "label": "Watermark"   },
-    { "id": "correlation", "label": "Correlation" },
-    { "id": "resilience",  "label": "Resilience"  }
+    { "id": "connection",   "label": "Connection"          },
+    { "id": "polling",      "label": "Polling"             },
+    { "id": "consumption",  "label": "Consumption Strategy" },
+    { "id": "watermark",    "label": "Watermark"           },
+    { "id": "correlation",  "label": "Correlation"         },
+    { "id": "resilience",   "label": "Resilience"          }
   ],
   "properties": [
     {
@@ -64,7 +65,10 @@
         { "name": "Auto-detect", "value": "" },
         { "name": "PostgreSQL",  "value": "POSTGRES" },
         { "name": "MySQL",       "value": "MYSQL" },
-        { "name": "H2",          "value": "H2" }
+        { "name": "H2",          "value": "H2" },
+        { "name": "Oracle",      "value": "ORACLE" },
+        { "name": "SQL Server",  "value": "SQLSERVER" },
+        { "name": "SQLite",      "value": "SQLITE" }
       ],
       "binding": { "type": "zeebe:property", "name": "inbound.dialect" }
     },
@@ -118,11 +122,52 @@
       "binding": { "type": "zeebe:property", "name": "inbound.queryTimeoutSeconds" }
     },
     {
+      "label": "Consumption Strategy",
+      "description": "How a correlated row is marked so it isn't redelivered.",
+      "group": "consumption",
+      "type": "Dropdown",
+      "value": "WATERMARK",
+      "choices": [
+        { "name": "Watermark column (default)",        "value": "WATERMARK" },
+        { "name": "Update flag column after read",     "value": "UPDATE_FLAG" },
+        { "name": "Delete row after read",              "value": "DELETE_AFTER_READ" }
+      ],
+      "binding": { "type": "zeebe:property", "name": "inbound.consumptionStrategy" }
+    },
+    {
+      "label": "Target Table",
+      "description": "Table the UPDATE/DELETE is issued against. The Polling Query may still join/filter freely.",
+      "group": "consumption",
+      "type": "String",
+      "feel": "optional",
+      "condition": { "property": "inbound.consumptionStrategy", "oneOf": ["UPDATE_FLAG", "DELETE_AFTER_READ"] },
+      "binding": { "type": "zeebe:property", "name": "inbound.targetTable" }
+    },
+    {
+      "label": "Key Column",
+      "description": "Column that uniquely identifies a row, used to target the UPDATE/DELETE (single column only).",
+      "group": "consumption",
+      "type": "String",
+      "feel": "optional",
+      "condition": { "property": "inbound.consumptionStrategy", "oneOf": ["UPDATE_FLAG", "DELETE_AFTER_READ"] },
+      "binding": { "type": "zeebe:property", "name": "inbound.keyColumn" }
+    },
+    {
+      "label": "Flag Column",
+      "description": "Boolean column flipped to TRUE immediately after a row is correlated.",
+      "group": "consumption",
+      "type": "String",
+      "feel": "optional",
+      "condition": { "property": "inbound.consumptionStrategy", "equals": "UPDATE_FLAG" },
+      "binding": { "type": "zeebe:property", "name": "inbound.flagColumn" }
+    },
+    {
       "label": "Watermark Column",
       "description": "Column name used to track polling progress (e.g. updated_at)",
       "group": "watermark",
       "type": "String",
       "feel": "optional",
+      "condition": { "property": "inbound.consumptionStrategy", "equals": "WATERMARK" },
       "binding": { "type": "zeebe:property", "name": "inbound.watermarkColumn" },
       "constraints": { "notEmpty": true }
     },
@@ -137,6 +182,7 @@
         { "name": "UUID",        "value": "UUID" },
         { "name": "String",      "value": "STRING" }
       ],
+      "condition": { "property": "inbound.consumptionStrategy", "equals": "WATERMARK" },
       "binding": { "type": "zeebe:property", "name": "inbound.watermarkType" }
     },
     {
@@ -146,7 +192,31 @@
       "type": "String",
       "feel": "optional",
       "optional": true,
+      "condition": { "property": "inbound.consumptionStrategy", "equals": "WATERMARK" },
       "binding": { "type": "zeebe:property", "name": "inbound.initialWatermark" }
+    },
+    {
+      "label": "Watermark Storage",
+      "description": "Where the watermark is persisted between polls.",
+      "group": "watermark",
+      "type": "Dropdown",
+      "value": "IN_MEMORY",
+      "choices": [
+        { "name": "In-memory (lost on restart)",      "value": "IN_MEMORY" },
+        { "name": "Durable (JDBC table)",              "value": "JDBC_TABLE" }
+      ],
+      "condition": { "property": "inbound.consumptionStrategy", "equals": "WATERMARK" },
+      "binding": { "type": "zeebe:property", "name": "inbound.watermarkStorage" }
+    },
+    {
+      "label": "Watermark Table Name",
+      "description": "Operator-created table holding durable watermarks (see README for DDL). Must already exist.",
+      "group": "watermark",
+      "type": "String",
+      "value": "camunda_db_poller_watermark",
+      "feel": "optional",
+      "condition": { "property": "inbound.watermarkStorage", "equals": "JDBC_TABLE" },
+      "binding": { "type": "zeebe:property", "name": "inbound.watermarkTableName" }
     },
     {
       "label": "Instance ID",

@@ -38,7 +38,9 @@ public final class DataSourceFactory {
             cfg.setConnectionTimeout(props.getConnectionTimeoutMs());
             cfg.setConnectionTestQuery(dialect.validationQuery());
             cfg.setPoolName("db-poller-" + props.getPollingQueryHash());
-            cfg.setReadOnly(true);
+            // Read-only unless the configured consumption strategy or watermark
+            // storage needs to UPDATE/DELETE/INSERT (see DbPollerProperties#requiresWriteAccess).
+            cfg.setReadOnly(!props.requiresWriteAccess());
             cfg.setAutoCommit(true);
 
             long idleTimeout = Math.max(

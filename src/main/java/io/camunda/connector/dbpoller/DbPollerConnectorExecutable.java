@@ -9,6 +9,7 @@ import io.camunda.connector.api.inbound.Severity;
 import io.camunda.connector.dbpoller.exception.DbPollerException;
 import io.camunda.connector.dbpoller.service.DataSourceFactory;
 import io.camunda.connector.dbpoller.service.InMemoryWatermarkStore;
+import io.camunda.connector.dbpoller.service.JdbcWatermarkStore;
 import io.camunda.connector.dbpoller.service.PollingService;
 import io.camunda.connector.dbpoller.service.WatermarkStore;
 import org.slf4j.Logger;
@@ -60,7 +61,7 @@ public class DbPollerConnectorExecutable implements InboundConnectorExecutable<I
 
         try {
             dataSource = DataSourceFactory.build(properties);
-            watermarkStore = new InMemoryWatermarkStore(properties.parsedInitialWatermark());
+            watermarkStore = buildWatermarkStore(properties, dataSource);
             pollingService = new PollingService(context, properties, dataSource, watermarkStore);
 
             scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -87,6 +88,29 @@ public class DbPollerConnectorExecutable implements InboundConnectorExecutable<I
             shutdownQuietly();
             throw new DbPollerException("Activation failed", ex);
         }
+    }
+
+    /**
+     * Chooses the {@link WatermarkStore} implementation for the configured
+     * {@link DbPollerProperties.ConsumptionStrategy} and {@link DbPollerProperties.WatermarkStorage}.
+     *
+     * <p>Returns an unused, never-written {@link InMemoryWatermarkStore} for
+     * {@code UPDATE_FLAG}/{@code DELETE_AFTER_READ}, since those strategies track
+     * consumption in the source table itself rather than via a watermark value.
+     */
+    private static WatermarkStore buildWatermarkStore(DbPollerProperties props, DataSource dataSource) {
+        if (props.getConsumptionStrategy() != DbPollerProperties.ConsumptionStrategy.WATERMARK) {
+            return new InMemoryWatermarkStore(null);
+        }
+        Object initial = props.parsedInitialWatermark();
+        if (props.getWatermarkStorage() == DbPollerProperties.WatermarkStorage.JDBC_TABLE) {
+            String pollerKey = props.getInstanceId() != null && !props.getInstanceId().isBlank()
+                    ? props.getInstanceId()
+                    : props.getPollingQueryHash();
+            return new JdbcWatermarkStore(dataSource, props.getDialect(), props.getWatermarkTableName(),
+                    pollerKey, props.getWatermarkType(), initial);
+        }
+        return new InMemoryWatermarkStore(initial);
     }
 
     /**
