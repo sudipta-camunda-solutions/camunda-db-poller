@@ -1,0 +1,215 @@
+{
+  "$schema": "https://unpkg.com/@camunda/zeebe-element-templates-json-schema/resources/schema.json",
+  "name": "Database Polling Connector",
+  "id": "io.camunda.connector.dbpoller.v1",
+  "version": 1,
+  "description": "Periodically polls a JDBC database and correlates each row as a BPMN message.",
+  "documentationRef": "https://github.com/camunda-community-hub/camunda-db-poller",
+  "icon": {
+    "contents": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+CiAgPCEtLSBkYXRhYmFzZSBjeWxpbmRlciAtLT4KICA8Zz4KICAgIDxlbGxpcHNlIGN4PSIxMiIgY3k9IjE5IiByeD0iOCIgcnk9IjIuNSIgZmlsbD0iIzE2Mjk0QSIvPgogICAgPHJlY3QgeD0iNCIgeT0iNyIgd2lkdGg9IjE2IiBoZWlnaHQ9IjEyIiBmaWxsPSIjMUYzODY0Ii8+CiAgICA8ZWxsaXBzZSBjeD0iMTIiIGN5PSIxMSIgcng9IjgiIHJ5PSIyLjUiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzNDNUE4QSIgc3Ryb2tlLXdpZHRoPSIwLjgiIG9wYWNpdHk9IjAuNiIvPgogICAgPGVsbGlwc2UgY3g9IjEyIiBjeT0iMTUiIHJ4PSI4IiByeT0iMi41IiBmaWxsPSJub25lIiBzdHJva2U9IiMzQzVBOEEiIHN0cm9rZS13aWR0aD0iMC44IiBvcGFjaXR5PSIwLjYiLz4KICAgIDxlbGxpcHNlIGN4PSIxMiIgY3k9IjciIHJ4PSI4IiByeT0iMi41IiBmaWxsPSIjMkU0RTg1Ii8+CiAgPC9nPgoKICA8IS0tIHBvbGxpbmcgYmFkZ2UgLS0+CiAgPGNpcmNsZSBjeD0iMjMiIGN5PSIyMiIgcj0iNy40IiBmaWxsPSIjMkZBODRGIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iMS40Ii8+CiAgPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMTguNiwxNy42KSBzY2FsZSgwLjM2NykiPgogICAgPHBhdGggZmlsbD0iI0ZGRkZGRiIgZD0iTTE3LjY1IDYuMzVBNy45NTggNy45NTggMCAwMDEyIDRWMUw4IDVsNCA0VjZjMi43NiAwIDUgMi4yNCA1IDUgMCAuMzQtLjAzLjY3LS4wOSAxaDEuNzljLjA1LS4zMy4wOC0uNjYuMDgtMSAwLTMuMzEtMS4zNC02LjMxLTMuNTEtOC40OHpNMTIgMThjLTIuNzYgMC01LTIuMjQtNS01IDAtLjM0LjAzLS42Ny4wOS0xSDQuM2MtLjA1LjMzLS4wOC42Ni0uMDggMSAwIDMuMzEgMS4zNCA2LjMxIDMuNTEgOC40OEE3Ljk1OCA3Ljk1OCAwIDAwMTIgMjB2M2w0LTQtNC00djN6Ii8+CiAgPC9nPgo8L3N2Zz4K"
+  },
+  "category": {
+    "id": "connectors",
+    "name": "Connectors"
+  },
+  "appliesTo": ["bpmn:StartEvent", "bpmn:IntermediateCatchEvent"],
+  "elementType": {
+    "value": "bpmn:StartEvent",
+    "eventDefinition": "bpmn:MessageEventDefinition"
+  },
+  "groups": [
+    { "id": "connection",  "label": "Connection"  },
+    { "id": "polling",     "label": "Polling"     },
+    { "id": "watermark",   "label": "Watermark"   },
+    { "id": "correlation", "label": "Correlation" },
+    { "id": "resilience",  "label": "Resilience"  }
+  ],
+  "properties": [
+    {
+      "type": "Hidden",
+      "value": "io.camunda:camunda-db-poller:1",
+      "binding": { "type": "zeebe:property", "name": "inbound.type" }
+    },
+    {
+      "label": "JDBC URL",
+      "description": "e.g. jdbc:postgresql://host:5432/mydb",
+      "group": "connection",
+      "type": "String",
+      "feel": "optional",
+      "binding": { "type": "zeebe:property", "name": "inbound.jdbcUrl" },
+      "constraints": { "notEmpty": true }
+    },
+    {
+      "label": "Username",
+      "group": "connection",
+      "type": "String",
+      "feel": "optional",
+      "binding": { "type": "zeebe:property", "name": "inbound.username" },
+      "constraints": { "notEmpty": true }
+    },
+    {
+      "label": "Password",
+      "group": "connection",
+      "type": "String",
+      "feel": "optional",
+      "binding": { "type": "zeebe:property", "name": "inbound.password" },
+      "constraints": { "notEmpty": true }
+    },
+    {
+      "label": "Dialect (auto-detect if blank)",
+      "group": "connection",
+      "type": "Dropdown",
+      "value": "",
+      "choices": [
+        { "name": "Auto-detect", "value": "" },
+        { "name": "PostgreSQL",  "value": "POSTGRES" },
+        { "name": "MySQL",       "value": "MYSQL" },
+        { "name": "H2",          "value": "H2" }
+      ],
+      "binding": { "type": "zeebe:property", "name": "inbound.dialect" }
+    },
+    {
+      "label": "Connection Timeout (ms)",
+      "group": "connection",
+      "type": "String",
+      "value": "5000",
+      "feel": "optional",
+      "binding": { "type": "zeebe:property", "name": "inbound.connectionTimeoutMs" }
+    },
+    {
+      "label": "Pool Max Size",
+      "group": "connection",
+      "type": "String",
+      "value": "2",
+      "feel": "optional",
+      "binding": { "type": "zeebe:property", "name": "inbound.poolMaxSize" }
+    },
+    {
+      "label": "Polling Query",
+      "description": "SELECT query with :lastWatermark placeholder. Example: SELECT * FROM orders WHERE updated_at > :lastWatermark ORDER BY updated_at",
+      "group": "polling",
+      "type": "Text",
+      "feel": "optional",
+      "binding": { "type": "zeebe:property", "name": "inbound.pollingQuery" },
+      "constraints": { "notEmpty": true }
+    },
+    {
+      "label": "Polling Interval (seconds)",
+      "group": "polling",
+      "type": "String",
+      "value": "30",
+      "feel": "optional",
+      "binding": { "type": "zeebe:property", "name": "inbound.pollingIntervalSeconds" }
+    },
+    {
+      "label": "Batch Size",
+      "group": "polling",
+      "type": "String",
+      "value": "100",
+      "feel": "optional",
+      "binding": { "type": "zeebe:property", "name": "inbound.batchSize" }
+    },
+    {
+      "label": "Query Timeout (seconds)",
+      "group": "polling",
+      "type": "String",
+      "value": "30",
+      "feel": "optional",
+      "binding": { "type": "zeebe:property", "name": "inbound.queryTimeoutSeconds" }
+    },
+    {
+      "label": "Watermark Column",
+      "description": "Column name used to track polling progress (e.g. updated_at)",
+      "group": "watermark",
+      "type": "String",
+      "feel": "optional",
+      "binding": { "type": "zeebe:property", "name": "inbound.watermarkColumn" },
+      "constraints": { "notEmpty": true }
+    },
+    {
+      "label": "Watermark Type",
+      "group": "watermark",
+      "type": "Dropdown",
+      "value": "TIMESTAMP",
+      "choices": [
+        { "name": "Timestamp",   "value": "TIMESTAMP" },
+        { "name": "Big Integer", "value": "BIGINT" },
+        { "name": "UUID",        "value": "UUID" },
+        { "name": "String",      "value": "STRING" }
+      ],
+      "binding": { "type": "zeebe:property", "name": "inbound.watermarkType" }
+    },
+    {
+      "label": "Initial Watermark",
+      "description": "Starting value for the watermark. Leave blank for type-appropriate default (EPOCH / 0 / nil UUID / empty string).",
+      "group": "watermark",
+      "type": "String",
+      "feel": "optional",
+      "optional": true,
+      "binding": { "type": "zeebe:property", "name": "inbound.initialWatermark" }
+    },
+    {
+      "label": "Instance ID",
+      "description": "Logical identifier included in every RowPayload metadata block.",
+      "group": "watermark",
+      "type": "String",
+      "feel": "optional",
+      "optional": true,
+      "binding": { "type": "zeebe:property", "name": "inbound.instanceId" }
+    },
+    {
+      "label": "Correlation Key",
+      "description": "FEEL expression to extract the correlation key from the row payload.",
+      "group": "correlation",
+      "type": "String",
+      "feel": "required",
+      "binding": { "type": "zeebe:property", "name": "correlationKey" },
+      "constraints": { "notEmpty": true }
+    },
+    {
+      "label": "Message ID",
+      "description": "FEEL expression for deduplication message ID (optional).",
+      "group": "correlation",
+      "type": "String",
+      "feel": "optional",
+      "optional": true,
+      "binding": { "type": "zeebe:property", "name": "messageId" }
+    },
+    {
+      "label": "Activation Condition",
+      "description": "FEEL expression evaluated on the row payload; message is only correlated when true.",
+      "group": "correlation",
+      "type": "String",
+      "feel": "optional",
+      "optional": true,
+      "binding": { "type": "zeebe:property", "name": "activationCondition" }
+    },
+    {
+      "label": "Result Variable",
+      "description": "Process variable name to store the correlated row payload.",
+      "group": "correlation",
+      "type": "String",
+      "feel": "optional",
+      "optional": true,
+      "binding": { "type": "zeebe:property", "name": "resultVariable" }
+    },
+    {
+      "label": "Max Consecutive Failures",
+      "group": "resilience",
+      "type": "String",
+      "value": "5",
+      "feel": "optional",
+      "binding": { "type": "zeebe:property", "name": "inbound.maxConsecutiveFailures" }
+    },
+    {
+      "label": "Circuit Breaker Threshold",
+      "description": "Consecutive failures before health is reported as DOWN.",
+      "group": "resilience",
+      "type": "String",
+      "value": "10",
+      "feel": "optional",
+      "binding": { "type": "zeebe:property", "name": "inbound.circuitBreakerThreshold" }
+    }
+  ]
+}
+
